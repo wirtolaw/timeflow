@@ -91,6 +91,13 @@ const categoryTree: CategoryDef[] = [
 ];
 
 export async function seedCategories(userId: string): Promise<void> {
+  // Check if already seeded
+  const { count } = await supabase
+    .from('tf_categories')
+    .select('*', { count: 'exact', head: true })
+    .eq('user_id', userId);
+  if (count && count > 0) return;
+
   for (let i = 0; i < categoryTree.length; i++) {
     const parent = categoryTree[i];
 

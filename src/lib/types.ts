@@ -30,3 +30,22 @@ export interface Project {
   created_at: string;
   completed_at: string | null;
 }
+
+export interface DailyPlan {
+  id: string;
+  user_id: string;
+  date: string;
+  raw_text: string | null;
+  created_at: string;
+}
+
+export interface PlanBlock {
+  id: string;
+  plan_id: string;
+  start_time: string;
+  end_time: string;
+  task_name: string;
+  matched_category_id: string | null;
+  estimated_minutes: number | null;
+  actual_minutes: number | null;
+}
