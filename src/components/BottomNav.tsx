@@ -11,8 +11,11 @@ export default function BottomNav() {
   const location = useLocation();
   const navigate = useNavigate();
 
+  // Hide bottom nav on settings page
+  if (location.pathname === '/settings') return null;
+
   return (
-    <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] bg-white border-t border-gray-200 z-50">
+    <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] bg-[var(--bg-card)] border-t border-[var(--border)] z-50">
       <div className="flex justify-around items-center h-14">
         {tabs.map((tab) => {
           const isActive = location.pathname === tab.path;
@@ -21,7 +24,7 @@ export default function BottomNav() {
               key={tab.path}
               onClick={() => navigate(tab.path)}
               className={`flex flex-col items-center gap-0.5 py-1 px-3 text-xs transition-colors ${
-                isActive ? 'text-gray-900 font-medium' : 'text-gray-400'
+                isActive ? 'text-[var(--text-primary)] font-medium' : 'text-[var(--text-secondary)]'
               }`}
             >
               <span className="text-lg">{tab.icon}</span>

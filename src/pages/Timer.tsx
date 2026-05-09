@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { getUserId } from '../lib/supabase';
 import type { Category, TimeEntry, Project } from '../lib/types';
 import { startOfDay } from 'date-fns';
+import { getNotificationSettings, getContinuousWorkSettings } from './Settings';
 
 interface CategoryGroup {
   parent: Category;
@@ -10,6 +12,7 @@ interface CategoryGroup {
 }
 
 export default function Timer() {
+  const navigate = useNavigate();
   const [categories, setCategories] = useState<Category[]>([]);
   const [activeEntry, setActiveEntry] = useState<TimeEntry | null>(null);
   const [secondaryEntry, setSecondaryEntry] = useState<TimeEntry | null>(null);
@@ -42,6 +45,12 @@ export default function Timer() {
   const [editingCatId, setEditingCatId] = useState<string | null>(null);
   const [editingCatName, setEditingCatName] = useState('');
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  // Notification tracking refs
+  const notifiedForgotten = useRef(false);
+  const notifiedContinuous = useRef(false);
+  const notifiedWarnings = useRef<Set<string>>(new Set());
+  const notifiedExceeded = useRef<Set<string>>(new Set());
 
   const loadCategories = useCallback(async () => {
     if (!userId) return;
@@ -134,6 +143,110 @@ export default function Timer() {
     };
   }, [activeEntry, secondaryEntry]);
 
+  // Reset notification tracking when timer changes
+  useEffect(() => {
+    notifiedForgotten.current = false;
+    notifiedContinuous.current = false;
+    notifiedWarnings.current = new Set();
+    notifiedExceeded.current = new Set();
+  }, [activeEntry?.id]);
+
+  // Notification check interval (every 60 seconds)
+  useEffect(() => {
+    if (!activeEntry) return;
+
+    const sendNotification = (title: string, body: string) => {
+      if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification(title, { body });
+      }
+    };
+
+    const checkNotifications = async () => {
+      const settings = getNotificationSettings();
+      if (!settings.enabled) return;
+
+      const elapsedMs = Date.now() - new Date(activeEntry.start_time).getTime();
+      const elapsedMins = elapsedMs / 60000;
+
+      // Forgotten timer (>= 4h)
+      if (settings.forgottenTimer && elapsedMins >= 240 && !notifiedForgotten.current) {
+        notifiedForgotten.current = true;
+        sendNotification('遗忘计时器', `计时器已运行超过4小时，请确认是否仍在进行中。`);
+      }
+
+      // Continuous work
+      if (settings.continuousWork && !notifiedContinuous.current) {
+        const cwSettings = getContinuousWorkSettings();
+        const cat = categories.find((c) => c.id === activeEntry.category_id);
+        const parent = cat?.parent_id ? categories.find((c) => c.id === cat.parent_id) : cat;
+        const parentName = parent?.name ?? '';
+        const isException = cwSettings.exceptionCategories.includes(parentName);
+        if (!isException && elapsedMins >= cwSettings.thresholdMinutes) {
+          notifiedContinuous.current = true;
+          sendNotification('连续工作提醒', `你已连续工作${Math.round(elapsedMins)}分钟，建议休息一下。`);
+        }
+      }
+
+      // Habit limit warnings
+      if (settings.limitWarning || settings.limitExceeded) {
+        // Load habits
+        const { data: habits } = await supabase
+          .from('tf_habits')
+          .select('*')
+          .eq('user_id', userId!)
+          .eq('type', 'time_max');
+        if (habits) {
+          for (const habit of habits) {
+            if (!habit.category_id) continue;
+            // Compute today's total for this habit's category
+            const catIds = new Set<string>();
+            catIds.add(habit.category_id);
+            for (const c of categories) {
+              if (c.parent_id === habit.category_id) catIds.add(c.id);
+            }
+            // Also if habit.category_id is a child, find parent and siblings
+            const habitCat = categories.find((c) => c.id === habit.category_id);
+            if (habitCat?.parent_id) {
+              catIds.add(habitCat.parent_id);
+              for (const c of categories) {
+                if (c.parent_id === habitCat.parent_id) catIds.add(c.id);
+              }
+            }
+
+            let todayMins = 0;
+            for (const entry of todayEntries) {
+              if (!catIds.has(entry.category_id)) continue;
+              const s = new Date(entry.start_time).getTime();
+              const e = entry.end_time ? new Date(entry.end_time).getTime() : Date.now();
+              todayMins += (e - s) / 60000;
+            }
+            // Also add current timer if in this category
+            if (catIds.has(activeEntry.category_id)) {
+              const s = new Date(activeEntry.start_time).getTime();
+              todayMins += (Date.now() - s) / 60000;
+            }
+
+            const ratio = todayMins / habit.target_value;
+
+            if (settings.limitWarning && ratio >= 0.8 && ratio < 1 && !notifiedWarnings.current.has(habit.id)) {
+              notifiedWarnings.current.add(habit.id);
+              sendNotification('习惯预警', `"${habit.name}" 已达到目标的${Math.round(ratio * 100)}%，请注意控制。`);
+            }
+            if (settings.limitExceeded && ratio >= 1 && !notifiedExceeded.current.has(habit.id)) {
+              notifiedExceeded.current.add(habit.id);
+              sendNotification('习惯超限', `"${habit.name}" 已超过今日限制！`);
+            }
+          }
+        }
+      }
+    };
+
+    // Check immediately, then every 60s
+    checkNotifications();
+    const iv = window.setInterval(checkNotifications, 60000);
+    return () => clearInterval(iv);
+  }, [activeEntry, todayEntries, categories, userId]);
+
   const getCategoryById = (id: string) => categories.find((c) => c.id === id);
 
   const getCategoryName = (entry: TimeEntry | null) => {
@@ -154,6 +267,12 @@ export default function Timer() {
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  };
+
+  const requestNotificationPermission = () => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
   };
 
   const stopAllTimers = async () => {
@@ -182,17 +301,14 @@ export default function Timer() {
   const promoteSecondary = async () => {
     if (!secondaryEntry || !activeEntry) return;
     const now = new Date().toISOString();
-    // Demote current primary to secondary
     await supabase
       .from('tf_time_entries')
       .update({ end_time: now })
       .eq('id', activeEntry.id);
-    // Promote secondary: end old, start new primary with same category
     await supabase
       .from('tf_time_entries')
       .update({ end_time: now })
       .eq('id', secondaryEntry.id);
-    // Start new primary for old secondary's category
     const { data: newPrimary } = await supabase
       .from('tf_time_entries')
       .insert({
@@ -205,7 +321,6 @@ export default function Timer() {
       })
       .select()
       .single();
-    // Start new secondary for old primary's category
     const { data: newSecondary } = await supabase
       .from('tf_time_entries')
       .insert({
@@ -225,6 +340,7 @@ export default function Timer() {
 
   const startTimer = async (categoryId: string, projectId?: string | null, asPrimary = true) => {
     if (!userId) return;
+    requestNotificationPermission();
     const { data } = await supabase
       .from('tf_time_entries')
       .insert({
@@ -247,7 +363,6 @@ export default function Timer() {
     }
   };
 
-  // Get projects for a category (check category and its parent)
   const getProjectsForCategory = (categoryId: string): Project[] => {
     const cat = getCategoryById(categoryId);
     if (!cat) return [];
@@ -263,12 +378,9 @@ export default function Timer() {
   const handleCategoryTap = async (categoryId: string) => {
     if (activeEntry) {
       if (activeEntry.category_id === categoryId) {
-        // Tapping active category stops all
         await stopAllTimers();
       } else {
-        // Switch primary: stop all, start new
         await stopAllTimers();
-        // Check projects
         const catProjects = getProjectsForCategory(categoryId);
         if (catProjects.length >= 2) {
           setPendingCategoryId(categoryId);
@@ -278,7 +390,6 @@ export default function Timer() {
         }
       }
     } else {
-      // No active entry, start new
       const catProjects = getProjectsForCategory(categoryId);
       if (catProjects.length >= 2) {
         setPendingCategoryId(categoryId);
@@ -297,7 +408,6 @@ export default function Timer() {
     }
   };
 
-  // Long press handlers
   const handleTouchStart = (categoryId: string) => {
     longPressTriggered.current = false;
     longPressTimer.current = window.setTimeout(() => {
@@ -315,8 +425,7 @@ export default function Timer() {
 
   const handleLongPress = async (categoryId: string) => {
     if (activeEntry && !secondaryEntry) {
-      // Start as secondary task
-      if (activeEntry.category_id === categoryId) return; // Can't secondary same task
+      if (activeEntry.category_id === categoryId) return;
       const catProjects = getProjectsForCategory(categoryId);
       await startTimer(
         categoryId,
@@ -330,7 +439,6 @@ export default function Timer() {
     setShowSecondaryPopup(true);
   };
 
-  // Project management
   const handleAddProject = async () => {
     if (!userId || !newProjectName.trim() || !newProjectCategoryId) return;
     await supabase.from('tf_projects').insert({
@@ -352,11 +460,9 @@ export default function Timer() {
     loadProjects();
   };
 
-  // Category management
   const handleAddCategory = async () => {
     if (!userId || !newCatName.trim()) return;
     const parentId = newCatParentId || null;
-    // Get max sort_order
     const siblings = categories.filter((c) =>
       parentId ? c.parent_id === parentId : !c.parent_id
     );
@@ -384,14 +490,12 @@ export default function Timer() {
   };
 
   const handleDeleteCategory = async (catId: string) => {
-    // Delete children first
     await supabase.from('tf_categories').delete().eq('parent_id', catId);
     await supabase.from('tf_categories').delete().eq('id', catId);
     setConfirmDeleteId(null);
     loadCategories();
   };
 
-  // Group categories: parents with their children
   const parents = categories.filter((c) => !c.parent_id);
   const groups: CategoryGroup[] = parents.map((p) => ({
     parent: p,
@@ -400,7 +504,6 @@ export default function Timer() {
       .sort((a, b) => a.sort_order - b.sort_order),
   }));
 
-  // Today summary
   const todaySummary = () => {
     const catMap = new Map<string, number>();
     for (const entry of todayEntries) {
@@ -445,12 +548,21 @@ export default function Timer() {
             </button>
           </div>
           <span className="text-sm font-medium text-gray-300">TimeFlow</span>
-          <button
-            onClick={() => setShowCategoryEditor(true)}
-            className="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600"
-          >
-            编辑
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => navigate('/settings')}
+              className="text-lg opacity-70 hover:opacity-100"
+              title="设置"
+            >
+              ⚙️
+            </button>
+            <button
+              onClick={() => setShowCategoryEditor(true)}
+              className="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600"
+            >
+              编辑
+            </button>
+          </div>
         </div>
 
         {/* Active timer display */}
@@ -558,25 +670,28 @@ export default function Timer() {
                       isActive
                         ? 'text-white shadow-md scale-[1.02]'
                         : isSecondary
-                        ? 'text-gray-700 shadow-sm scale-[1.01]'
-                        : 'bg-white hover:bg-gray-50 text-gray-700 border-gray-100'
+                        ? 'shadow-sm scale-[1.01]'
+                        : 'bg-[var(--bg-card)] hover:opacity-80 border-[var(--border)]'
                     }`}
                     style={
                       isActive
                         ? {
                             backgroundColor: child.color,
                             borderColor: child.color,
+                            color: '#fff',
                           }
                         : isSecondary
                         ? {
                             borderColor: child.color,
                             borderWidth: '2px',
                             borderStyle: 'dashed',
-                            backgroundColor: '#f9fafb',
+                            backgroundColor: 'var(--bg-card)',
+                            color: 'var(--text-primary)',
                           }
                         : {
                             borderLeftColor: child.color,
                             borderLeftWidth: '3px',
+                            color: 'var(--text-primary)',
                           }
                     }
                   >
@@ -600,7 +715,7 @@ export default function Timer() {
 
       {/* Today summary bar */}
       {totalSeconds > 0 && (
-        <div className="px-4 py-3 border-t border-gray-100 bg-gray-50">
+        <div className="px-4 py-3 border-t border-[var(--border)] bg-[var(--bg-secondary)]">
           <div className="flex h-3 rounded-full overflow-hidden mb-1.5">
             {Array.from(summary.entries()).map(([parentId, secs]) => {
               const parent = getCategoryById(parentId);
@@ -618,7 +733,7 @@ export default function Timer() {
               );
             })}
           </div>
-          <div className="text-xs text-gray-500 text-center">
+          <div className="text-xs text-[var(--text-secondary)] text-center">
             今日已记录 {formatDuration(totalSeconds)}
           </div>
         </div>
@@ -631,10 +746,10 @@ export default function Timer() {
           onClick={() => setShowSecondaryPopup(false)}
         >
           <div
-            className="bg-white rounded-2xl p-5 mx-6 w-full max-w-sm space-y-3"
+            className="bg-[var(--bg-card)] rounded-2xl p-5 mx-6 w-full max-w-sm space-y-3"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="text-center text-sm text-gray-500 mb-2">
+            <div className="text-center text-sm text-[var(--text-secondary)] mb-2">
               副任务: {getCategoryName(secondaryEntry)}
             </div>
             <button
@@ -651,13 +766,13 @@ export default function Timer() {
                 setShowSecondaryPopup(false);
                 await stopSecondaryTimer();
               }}
-              className="w-full py-3 rounded-xl bg-red-50 text-red-600 text-sm font-medium"
+              className="w-full py-3 rounded-xl bg-red-50 text-red-600 text-sm font-medium dark:bg-red-900/20 dark:text-red-400"
             >
               停止此任务
             </button>
             <button
               onClick={() => setShowSecondaryPopup(false)}
-              className="w-full py-2 text-sm text-gray-400"
+              className="w-full py-2 text-sm text-[var(--text-secondary)]"
             >
               取消
             </button>
@@ -675,22 +790,22 @@ export default function Timer() {
           }}
         >
           <div
-            className="bg-white rounded-t-2xl p-5 w-full max-w-[430px] space-y-3"
+            className="bg-[var(--bg-card)] rounded-t-2xl p-5 w-full max-w-[430px] space-y-3"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="text-center text-sm font-medium text-gray-700 mb-3">选择项目</div>
+            <div className="text-center text-sm font-medium text-[var(--text-primary)] mb-3">选择项目</div>
             {getProjectsForCategory(pendingCategoryId).map((proj) => (
               <button
                 key={proj.id}
                 onClick={() => handleProjectSelect(proj.id)}
-                className="w-full py-3 px-4 rounded-xl bg-gray-50 hover:bg-gray-100 text-sm text-left text-gray-700 transition-colors"
+                className="w-full py-3 px-4 rounded-xl bg-[var(--bg-secondary)] hover:opacity-80 text-sm text-left text-[var(--text-primary)] transition-colors"
               >
                 {proj.name}
               </button>
             ))}
             <button
               onClick={() => handleProjectSelect(null)}
-              className="w-full py-3 px-4 rounded-xl bg-gray-50 hover:bg-gray-100 text-sm text-left text-gray-400"
+              className="w-full py-3 px-4 rounded-xl bg-[var(--bg-secondary)] hover:opacity-80 text-sm text-left text-[var(--text-secondary)]"
             >
               不选择项目
             </button>
@@ -699,7 +814,7 @@ export default function Timer() {
                 setShowProjectSheet(false);
                 setPendingCategoryId(null);
               }}
-              className="w-full py-2 text-sm text-gray-400 text-center"
+              className="w-full py-2 text-sm text-[var(--text-secondary)] text-center"
             >
               取消
             </button>
@@ -714,20 +829,19 @@ export default function Timer() {
           onClick={() => setShowProjectManager(false)}
         >
           <div
-            className="bg-white rounded-2xl p-5 mx-4 w-full max-w-sm max-h-[80vh] overflow-y-auto"
+            className="bg-[var(--bg-card)] rounded-2xl p-5 mx-4 w-full max-w-sm max-h-[80vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-base font-medium text-gray-800">项目管理</h3>
+              <h3 className="text-base font-medium text-[var(--text-primary)]">项目管理</h3>
               <button
                 onClick={() => setShowProjectManager(false)}
-                className="text-gray-400 text-lg"
+                className="text-[var(--text-secondary)] text-lg"
               >
                 ✕
               </button>
             </div>
 
-            {/* Project list grouped by category */}
             {parents.map((parent) => {
               const parentProjects = projects.filter((p) => {
                 const pCat = getCategoryById(p.category_id);
@@ -743,12 +857,12 @@ export default function Timer() {
                   {parentProjects.map((proj) => (
                     <div
                       key={proj.id}
-                      className="flex items-center justify-between py-2 px-2 rounded-lg hover:bg-gray-50"
+                      className="flex items-center justify-between py-2 px-2 rounded-lg hover:bg-[var(--bg-secondary)]"
                     >
-                      <span className="text-sm text-gray-700">{proj.name}</span>
+                      <span className="text-sm text-[var(--text-primary)]">{proj.name}</span>
                       <button
                         onClick={() => handleCompleteProject(proj.id)}
-                        className="text-xs px-2 py-1 rounded bg-green-50 text-green-600 hover:bg-green-100"
+                        className="text-xs px-2 py-1 rounded bg-green-50 text-green-600 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-400"
                       >
                         完成
                       </button>
@@ -759,23 +873,22 @@ export default function Timer() {
             })}
 
             {projects.length === 0 && (
-              <div className="text-sm text-gray-400 text-center py-4">暂无活跃项目</div>
+              <div className="text-sm text-[var(--text-secondary)] text-center py-4">暂无活跃项目</div>
             )}
 
-            {/* Add new project */}
-            <div className="border-t border-gray-100 mt-3 pt-3 space-y-2">
-              <div className="text-xs font-medium text-gray-500">新增项目</div>
+            <div className="border-t border-[var(--border)] mt-3 pt-3 space-y-2">
+              <div className="text-xs font-medium text-[var(--text-secondary)]">新增项目</div>
               <input
                 type="text"
                 value={newProjectName}
                 onChange={(e) => setNewProjectName(e.target.value)}
                 placeholder="项目名称"
-                className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-1 focus:ring-gray-300"
+                className="w-full px-3 py-2 rounded-lg border border-[var(--border)] text-sm focus:outline-none focus:ring-1 focus:ring-gray-300 bg-[var(--bg-primary)] text-[var(--text-primary)]"
               />
               <select
                 value={newProjectCategoryId}
                 onChange={(e) => setNewProjectCategoryId(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-1 focus:ring-gray-300 bg-white"
+                className="w-full px-3 py-2 rounded-lg border border-[var(--border)] text-sm focus:outline-none focus:ring-1 focus:ring-gray-300 bg-[var(--bg-primary)] text-[var(--text-primary)]"
               >
                 <option value="">选择分类</option>
                 {parents.map((p) => (
@@ -803,20 +916,19 @@ export default function Timer() {
           onClick={() => setShowCategoryEditor(false)}
         >
           <div
-            className="bg-white rounded-2xl p-5 mx-4 w-full max-w-sm max-h-[80vh] overflow-y-auto"
+            className="bg-[var(--bg-card)] rounded-2xl p-5 mx-4 w-full max-w-sm max-h-[80vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-base font-medium text-gray-800">分类管理</h3>
+              <h3 className="text-base font-medium text-[var(--text-primary)]">分类管理</h3>
               <button
                 onClick={() => setShowCategoryEditor(false)}
-                className="text-gray-400 text-lg"
+                className="text-[var(--text-secondary)] text-lg"
               >
                 ✕
               </button>
             </div>
 
-            {/* Existing categories */}
             {groups.map((group) => (
               <div key={group.parent.id} className="mb-3">
                 <div className="flex items-center justify-between py-1">
@@ -829,7 +941,7 @@ export default function Timer() {
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') handleRenameCategory(group.parent.id, editingCatName);
                       }}
-                      className="text-sm font-medium px-2 py-1 border border-gray-300 rounded focus:outline-none"
+                      className="text-sm font-medium px-2 py-1 border border-[var(--border)] rounded focus:outline-none bg-[var(--bg-primary)] text-[var(--text-primary)]"
                       autoFocus
                     />
                   ) : (
@@ -854,7 +966,7 @@ export default function Timer() {
                       </button>
                       <button
                         onClick={() => setConfirmDeleteId(null)}
-                        className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-500"
+                        className="text-xs px-2 py-1 rounded bg-[var(--bg-secondary)] text-[var(--text-secondary)]"
                       >
                         取消
                       </button>
@@ -879,12 +991,12 @@ export default function Timer() {
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') handleRenameCategory(child.id, editingCatName);
                         }}
-                        className="text-xs px-2 py-1 border border-gray-300 rounded focus:outline-none"
+                        className="text-xs px-2 py-1 border border-[var(--border)] rounded focus:outline-none bg-[var(--bg-primary)] text-[var(--text-primary)]"
                         autoFocus
                       />
                     ) : (
                       <span
-                        className="text-xs text-gray-600 cursor-pointer"
+                        className="text-xs text-[var(--text-secondary)] cursor-pointer"
                         onClick={() => {
                           setEditingCatId(child.id);
                           setEditingCatName(child.name);
@@ -903,7 +1015,7 @@ export default function Timer() {
                         </button>
                         <button
                           onClick={() => setConfirmDeleteId(null)}
-                          className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-500"
+                          className="text-xs px-2 py-1 rounded bg-[var(--bg-secondary)] text-[var(--text-secondary)]"
                         >
                           取消
                         </button>
@@ -921,20 +1033,19 @@ export default function Timer() {
               </div>
             ))}
 
-            {/* Add new category */}
-            <div className="border-t border-gray-100 mt-3 pt-3 space-y-2">
-              <div className="text-xs font-medium text-gray-500">新增分类</div>
+            <div className="border-t border-[var(--border)] mt-3 pt-3 space-y-2">
+              <div className="text-xs font-medium text-[var(--text-secondary)]">新增分类</div>
               <input
                 type="text"
                 value={newCatName}
                 onChange={(e) => setNewCatName(e.target.value)}
                 placeholder="分类名称"
-                className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-1 focus:ring-gray-300"
+                className="w-full px-3 py-2 rounded-lg border border-[var(--border)] text-sm focus:outline-none focus:ring-1 focus:ring-gray-300 bg-[var(--bg-primary)] text-[var(--text-primary)]"
               />
               <select
                 value={newCatParentId}
                 onChange={(e) => setNewCatParentId(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-1 focus:ring-gray-300 bg-white"
+                className="w-full px-3 py-2 rounded-lg border border-[var(--border)] text-sm focus:outline-none focus:ring-1 focus:ring-gray-300 bg-[var(--bg-primary)] text-[var(--text-primary)]"
               >
                 <option value="">作为顶级分类</option>
                 {parents.map((p) => (

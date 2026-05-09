@@ -7,6 +7,24 @@ import Timer from './pages/Timer';
 import Plan from './pages/Plan';
 import Habits from './pages/Habits';
 import Insights from './pages/Insights';
+import Settings from './pages/Settings';
+
+type ThemeMode = 'light' | 'dark' | 'system';
+
+function applyTheme(mode: ThemeMode) {
+  const root = document.documentElement;
+  if (mode === 'dark') {
+    root.classList.add('dark');
+  } else if (mode === 'light') {
+    root.classList.remove('dark');
+  } else {
+    if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+      root.classList.add('dark');
+    } else {
+      root.classList.remove('dark');
+    }
+  }
+}
 
 function Setup({ onComplete }: { onComplete: () => void }) {
   const [nickname, setNickname] = useState('');
@@ -23,11 +41,11 @@ function Setup({ onComplete }: { onComplete: () => void }) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 px-6">
+    <div className="min-h-screen flex items-center justify-center bg-[var(--bg-secondary)] px-6">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-semibold text-gray-800 mb-2">TimeFlow</h1>
-          <p className="text-gray-500 text-sm">时间追踪，从这里开始</p>
+          <h1 className="text-3xl font-semibold text-[var(--text-primary)] mb-2">TimeFlow</h1>
+          <p className="text-[var(--text-secondary)] text-sm">时间追踪，从这里开始</p>
         </div>
         <div className="space-y-4">
           <input
@@ -36,7 +54,7 @@ function Setup({ onComplete }: { onComplete: () => void }) {
             onChange={(e) => setNickname(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
             placeholder="输入你的昵称"
-            className="w-full px-4 py-3 rounded-xl border border-gray-200 text-center text-lg focus:outline-none focus:ring-2 focus:ring-gray-300 bg-white"
+            className="w-full px-4 py-3 rounded-xl border border-[var(--border)] text-center text-lg focus:outline-none focus:ring-2 focus:ring-gray-300 bg-[var(--bg-card)] text-[var(--text-primary)]"
             autoFocus
           />
           <button
@@ -59,18 +77,35 @@ export default function App() {
     setUserIdState(getUserId());
   }, []);
 
+  // Apply theme on mount and listen for system changes
+  useEffect(() => {
+    const theme = (localStorage.getItem('tf_theme') as ThemeMode) || 'system';
+    applyTheme(theme);
+
+    const mql = window.matchMedia('(prefers-color-scheme: dark)');
+    const handler = () => {
+      const currentTheme = (localStorage.getItem('tf_theme') as ThemeMode) || 'system';
+      if (currentTheme === 'system') {
+        applyTheme('system');
+      }
+    };
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
+  }, []);
+
   if (!userId) {
     return <Setup onComplete={() => setUserIdState(getUserId())} />;
   }
 
   return (
     <HashRouter>
-      <div className="max-w-[430px] mx-auto min-h-screen bg-gray-50 relative">
+      <div className="max-w-[430px] mx-auto min-h-screen bg-[var(--bg-secondary)] relative">
         <Routes>
           <Route path="/" element={<Timer />} />
           <Route path="/plan" element={<Plan />} />
           <Route path="/habits" element={<Habits />} />
           <Route path="/insights" element={<Insights />} />
+          <Route path="/settings" element={<Settings />} />
         </Routes>
         <BottomNav />
       </div>
