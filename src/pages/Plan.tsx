@@ -6,11 +6,13 @@ import type { Category, TimeEntry, DailyPlan, PlanBlock } from '../lib/types';
 export default function Plan() {
   const userId = getUserId();
   const [selectedDate, setSelectedDate] = useState(new Date());
+  const [planDate, setPlanDate] = useState(new Date());
   const [categories, setCategories] = useState<Category[]>([]);
   const [rawText, setRawText] = useState('');
   const [planBlocks, setPlanBlocks] = useState<PlanBlock[]>([]);
   const [todayEntries, setTodayEntries] = useState<TimeEntry[]>([]);
   const [currentPlan, setCurrentPlan] = useState<DailyPlan | null>(null);
+  const [showPlanDatePicker, setShowPlanDatePicker] = useState(false);
 
   // New state for layout
   const [isEditingPlan, setIsEditingPlan] = useState(false);
@@ -18,8 +20,11 @@ export default function Plan() {
   const [showPasteSection, setShowPasteSection] = useState(false);
 
   const dateStr = format(selectedDate, 'yyyy-MM-dd');
+  const planDateStr = format(planDate, 'yyyy-MM-dd');
+  const planDisplayDate = format(planDate, 'M月d日');
   const displayDate = format(selectedDate, 'M月d日');
   const isToday = format(new Date(), 'yyyy-MM-dd') === dateStr;
+  const isPlanToday = format(new Date(), 'yyyy-MM-dd') === planDateStr;
 
   const loadCategories = useCallback(async () => {
     if (!userId) return;
@@ -37,7 +42,7 @@ export default function Plan() {
       .from('tf_daily_plans')
       .select('*')
       .eq('user_id', userId)
-      .eq('date', dateStr)
+      .eq('date', planDateStr)
       .limit(1);
     if (plans && plans.length > 0) {
       const plan = plans[0] as DailyPlan;
@@ -54,7 +59,7 @@ export default function Plan() {
       setRawText('');
       setPlanBlocks([]);
     }
-  }, [userId, dateStr]);
+  }, [userId, planDateStr]);
 
   const loadEntries = useCallback(async () => {
     if (!userId) return;
@@ -77,12 +82,19 @@ export default function Plan() {
 
   useEffect(() => {
     loadPlan();
-    loadEntries();
-  }, [loadPlan, loadEntries]);
+  }, [loadPlan]);
 
-  // Reset editing state when date changes
+  useEffect(() => {
+    loadEntries();
+  }, [loadEntries]);
+
+  // Reset editing state when plan date changes
   useEffect(() => {
     setIsEditingPlan(false);
+  }, [planDateStr]);
+
+  // Reset paste/report when actual date changes
+  useEffect(() => {
     setShowPasteSection(false);
     setShowReport(false);
   }, [dateStr]);
@@ -141,7 +153,7 @@ export default function Plan() {
         .from('tf_daily_plans')
         .insert({
           user_id: userId,
-          date: dateStr,
+          date: planDateStr,
           raw_text: rawText,
         })
         .select()
@@ -566,26 +578,9 @@ export default function Plan() {
 
   return (
     <div className="flex flex-col min-h-screen pb-16">
-      {/* Header: Date selector */}
-      <div className="bg-gray-800 text-white px-4 py-4">
-        <div className="flex items-center justify-between">
-          <button
-            onClick={() => setSelectedDate(subDays(selectedDate, 1))}
-            className="px-3 py-1 text-lg"
-          >
-            &#8249;
-          </button>
-          <div className="text-center">
-            <div className="text-base font-medium">{displayDate}</div>
-            {isToday && <div className="text-xs text-gray-400">今天</div>}
-          </div>
-          <button
-            onClick={() => setSelectedDate(addDays(selectedDate, 1))}
-            className="px-3 py-1 text-lg"
-          >
-            &#8250;
-          </button>
-        </div>
+      {/* Header */}
+      <div className="bg-gray-800 text-white px-4 py-3">
+        <div className="text-base font-medium text-center">计划与实际</div>
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 py-3 space-y-0">
@@ -595,16 +590,39 @@ export default function Plan() {
           {/* Section header */}
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-semibold text-[var(--text-primary)]">
-              {'\uD83D\uDCCB'} 计划
+              📋 计划
             </h2>
-            {hasPlan && !isEditingPlan && (
-              <button
-                onClick={() => setIsEditingPlan(true)}
-                className="text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-              >
-                [编辑]
-              </button>
-            )}
+            <div className="flex items-center gap-3">
+              <div className="relative">
+                <button
+                  onClick={() => setShowPlanDatePicker(!showPlanDatePicker)}
+                  className="text-xs text-[var(--text-secondary)] bg-[var(--bg-secondary)] px-2 py-1 rounded"
+                >
+                  {planDisplayDate}{isPlanToday ? ' 今天' : ''} ▾
+                </button>
+                {showPlanDatePicker && (
+                  <div className="absolute right-0 top-8 z-10 bg-[var(--bg-card)] border border-[var(--border)] rounded-lg shadow-lg p-2">
+                    <input
+                      type="date"
+                      value={planDateStr}
+                      onChange={(e) => {
+                        setPlanDate(new Date(e.target.value + 'T12:00:00'));
+                        setShowPlanDatePicker(false);
+                      }}
+                      className="text-xs bg-[var(--bg-card)] text-[var(--text-primary)] border border-[var(--border)] rounded px-2 py-1"
+                    />
+                  </div>
+                )}
+              </div>
+              {hasPlan && !isEditingPlan && (
+                <button
+                  onClick={() => setIsEditingPlan(true)}
+                  className="text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                >
+                  [编辑]
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Display mode: show plan blocks as list */}
@@ -679,16 +697,31 @@ export default function Plan() {
           {/* Section header */}
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-semibold text-[var(--text-primary)]">
-              {'\u23F1'} 实际
+              ⏱ 实际
             </h2>
-            {hasEntries && (
-              <button
-                onClick={() => setShowPasteSection(!showPasteSection)}
-                className="text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-              >
-                [补录]
-              </button>
-            )}
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setSelectedDate(subDays(selectedDate, 1))}
+                  className="text-xs text-[var(--text-secondary)] px-1"
+                >‹</button>
+                <span className="text-xs text-[var(--text-secondary)] bg-[var(--bg-secondary)] px-2 py-1 rounded">
+                  {displayDate}{isToday ? ' 今天' : ''}
+                </span>
+                <button
+                  onClick={() => setSelectedDate(addDays(selectedDate, 1))}
+                  className="text-xs text-[var(--text-secondary)] px-1"
+                >›</button>
+              </div>
+              {hasEntries && (
+                <button
+                  onClick={() => setShowPasteSection(!showPasteSection)}
+                  className="text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                >
+                  [补录]
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Actual entries list */}
