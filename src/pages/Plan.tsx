@@ -321,6 +321,218 @@ export default function Plan() {
     return { rows, avgAbsDev };
   };
 
+  // ====== Time Record Paste Feature ======
+  const [showRecordSection, setShowRecordSection] = useState(false);
+  const [recordDate, setRecordDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [recordText, setRecordText] = useState('');
+  const [recordPreview, setRecordPreview] = useState<Array<{
+    start: string;
+    end: string;
+    description: string;
+    categoryId: string | null;
+    categoryPath: string | null;
+    originalText: string;
+  }>>([]);
+  const [showRecordPreview, setShowRecordPreview] = useState(false);
+  const [recordOverlapWarning, setRecordOverlapWarning] = useState('');
+  const [recordInserting, setRecordInserting] = useState(false);
+
+  // Get all leaf categories (no children)
+  const getLeafCategories = useCallback(() => {
+    // A leaf is a category that is not a parent of any other category
+    return categories.filter(c => !categories.some(child => child.parent_id === c.id));
+  }, [categories]);
+
+  // Build category path string
+  const buildCategoryPath = useCallback((catId: string): string => {
+    const cat = categories.find(c => c.id === catId);
+    if (!cat) return '';
+    if (cat.parent_id) {
+      const parent = categories.find(c => c.id === cat.parent_id);
+      if (parent) {
+        if (parent.parent_id) {
+          const grandparent = categories.find(c => c.id === parent.parent_id);
+          if (grandparent) return `${grandparent.name} > ${parent.name} > ${cat.name}`;
+        }
+        return `${parent.name} > ${cat.name}`;
+      }
+    }
+    return cat.name;
+  }, [categories]);
+
+  // Fuzzy match description against leaf categories
+  const fuzzyMatchCategory = useCallback((description: string): { id: string; path: string } | null => {
+    const leaves = getLeafCategories();
+    const desc = description.toLowerCase().trim();
+
+    // First pass: exact substring match (description contains category name or vice versa)
+    for (const leaf of leaves) {
+      const leafName = leaf.name.toLowerCase();
+      if (desc.includes(leafName) || leafName.includes(desc)) {
+        return { id: leaf.id, path: buildCategoryPath(leaf.id) };
+      }
+    }
+
+    // Second pass: check if any keyword from description matches
+    const keywords = desc.split(/[\s,，、]+/).filter(k => k.length >= 2);
+    for (const leaf of leaves) {
+      const leafName = leaf.name.toLowerCase();
+      for (const kw of keywords) {
+        if (leafName.includes(kw) || kw.includes(leafName)) {
+          return { id: leaf.id, path: buildCategoryPath(leaf.id) };
+        }
+      }
+    }
+
+    // Third pass: check parent category names
+    for (const leaf of leaves) {
+      const parent = leaf.parent_id ? categories.find(c => c.id === leaf.parent_id) : null;
+      if (parent) {
+        const parentName = parent.name.toLowerCase();
+        if (desc.includes(parentName)) {
+          return { id: leaf.id, path: buildCategoryPath(leaf.id) };
+        }
+        for (const kw of keywords) {
+          if (parentName.includes(kw) || kw.includes(parentName)) {
+            return { id: leaf.id, path: buildCategoryPath(leaf.id) };
+          }
+        }
+      }
+    }
+
+    return null;
+  }, [categories, getLeafCategories, buildCategoryPath]);
+
+  const handleParseRecords = () => {
+    if (!recordText.trim()) return;
+    const lines = recordText.split('\n');
+    const results: typeof recordPreview = [];
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      // Match time patterns: HH:MM-HH:MM, H:MM-H:MM, with -, ~, ～ separators
+      const match = trimmed.match(
+        /(\d{1,2}:\d{2})\s*[-~～]\s*(\d{1,2}:\d{2})\s+(.+)/
+      );
+      if (match) {
+        const startTime = match[1].length === 4 ? '0' + match[1] : match[1];
+        const endTime = match[2].length === 4 ? '0' + match[2] : match[2];
+        const description = match[3].trim();
+        const matched = fuzzyMatchCategory(description);
+
+        results.push({
+          start: startTime,
+          end: endTime,
+          description,
+          categoryId: matched?.id ?? null,
+          categoryPath: matched?.path ?? null,
+          originalText: trimmed,
+        });
+      }
+    }
+
+    setRecordPreview(results);
+    setShowRecordPreview(results.length > 0);
+  };
+
+  const handleRecordCategoryChange = (index: number, categoryId: string) => {
+    setRecordPreview(prev => prev.map((item, i) => {
+      if (i !== index) return item;
+      return {
+        ...item,
+        categoryId,
+        categoryPath: buildCategoryPath(categoryId),
+      };
+    }));
+  };
+
+  const handleConfirmRecords = async () => {
+    if (!userId || recordPreview.length === 0) return;
+    setRecordInserting(true);
+    setRecordOverlapWarning('');
+
+    try {
+      // Check for overlaps with existing entries
+      const dayStart = `${recordDate}T00:00:00`;
+      const dayEnd = `${recordDate}T23:59:59`;
+      const { data: existingEntries } = await supabase
+        .from('tf_time_entries')
+        .select('*')
+        .eq('user_id', userId)
+        .gte('start_time', dayStart)
+        .lte('start_time', dayEnd)
+        .not('end_time', 'is', null);
+
+      const overlaps: string[] = [];
+      const toInsert: Array<{
+        user_id: string;
+        category_id: string;
+        start_time: string;
+        end_time: string;
+        is_primary: boolean;
+      }> = [];
+
+      for (const record of recordPreview) {
+        if (!record.categoryId) continue;
+        const startISO = `${recordDate}T${record.start}:00`;
+        const endISO = `${recordDate}T${record.end}:00`;
+        const startMs = new Date(startISO).getTime();
+        const endMs = new Date(endISO).getTime();
+
+        // Check overlap
+        if (existingEntries) {
+          for (const existing of existingEntries) {
+            const exStart = new Date(existing.start_time).getTime();
+            const exEnd = new Date(existing.end_time).getTime();
+            if (startMs < exEnd && endMs > exStart) {
+              overlaps.push(`${record.start}-${record.end} ${record.description}`);
+              break;
+            }
+          }
+        }
+
+        toInsert.push({
+          user_id: userId,
+          category_id: record.categoryId,
+          start_time: startISO,
+          end_time: endISO,
+          is_primary: true,
+        });
+      }
+
+      if (overlaps.length > 0) {
+        const proceed = window.confirm(
+          `以下记录与已有记录时间重叠:\n${overlaps.join('\n')}\n\n是否继续补录?`
+        );
+        if (!proceed) {
+          setRecordInserting(false);
+          return;
+        }
+      }
+
+      if (toInsert.length === 0) {
+        setRecordOverlapWarning('没有已匹配分类的记录可以补录');
+        setRecordInserting(false);
+        return;
+      }
+
+      await supabase.from('tf_time_entries').insert(toInsert);
+
+      // Reset state and reload
+      setRecordText('');
+      setRecordPreview([]);
+      setShowRecordPreview(false);
+      setShowRecordSection(false);
+      loadEntries();
+    } catch {
+      setRecordOverlapWarning('补录失败，请重试');
+    } finally {
+      setRecordInserting(false);
+    }
+  };
+
   const matchStats = computeMatchStats();
   const accuracyStats = computeAccuracyStats();
 
@@ -384,6 +596,126 @@ export default function Plan() {
           >
             解析日程
           </button>
+        </div>
+
+        {/* ====== Time Record Paste Section ====== */}
+        <div className="mb-4 border-t border-[var(--border)] pt-3">
+          <button
+            onClick={() => setShowRecordSection(!showRecordSection)}
+            className="flex items-center gap-2 text-sm font-medium text-[var(--text-primary)] w-full text-left"
+          >
+            <span>{showRecordSection ? '▼' : '▶'}</span>
+            <span>📋 补录时间记录</span>
+          </button>
+
+          {showRecordSection && (
+            <div className="mt-3 space-y-3">
+              {/* Date selector */}
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-[var(--text-secondary)]">日期:</label>
+                <input
+                  type="date"
+                  value={recordDate}
+                  onChange={(e) => setRecordDate(e.target.value)}
+                  className="px-2 py-1 rounded-lg border border-[var(--border)] text-sm bg-[var(--bg-card)] text-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-gray-300"
+                />
+              </div>
+
+              {/* Textarea for pasting records */}
+              <textarea
+                value={recordText}
+                onChange={(e) => setRecordText(e.target.value)}
+                placeholder={"粘贴时间记录，例如:\n9:00-10:30 学法语\n14:00-15:00 写小说第三章\n15:30~17:00 玩游戏"}
+                className="w-full px-3 py-2 rounded-lg border border-[var(--border)] text-sm focus:outline-none focus:ring-1 focus:ring-gray-300 resize-none bg-[var(--bg-card)] text-[var(--text-primary)]"
+                rows={4}
+              />
+
+              <button
+                onClick={handleParseRecords}
+                disabled={!recordText.trim()}
+                className="w-full py-2 rounded-lg bg-gray-800 text-white text-sm font-medium disabled:opacity-40"
+              >
+                识别并补录
+              </button>
+
+              {/* Preview list */}
+              {showRecordPreview && recordPreview.length > 0 && (
+                <div className="bg-[var(--bg-card)] rounded-xl border border-[var(--border)] overflow-hidden">
+                  <div className="px-3 py-2 border-b border-[var(--border)]">
+                    <span className="text-xs font-medium text-[var(--text-secondary)]">
+                      识别结果 ({recordPreview.length} 条)
+                    </span>
+                  </div>
+                  <div className="divide-y divide-[var(--border)]">
+                    {recordPreview.map((item, idx) => (
+                      <div key={idx} className="px-3 py-2 flex items-center gap-2">
+                        <span className="text-xs text-[var(--text-secondary)] tabular-nums w-24 shrink-0">
+                          {item.start}-{item.end}
+                        </span>
+                        {item.categoryId ? (
+                          <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                            <span className="text-green-500 shrink-0">✓</span>
+                            <select
+                              value={item.categoryId}
+                              onChange={(e) => handleRecordCategoryChange(idx, e.target.value)}
+                              className="text-xs bg-transparent text-[var(--text-primary)] border-none focus:outline-none cursor-pointer truncate flex-1 min-w-0"
+                            >
+                              {getLeafCategories().map((cat) => (
+                                <option key={cat.id} value={cat.id}>
+                                  {buildCategoryPath(cat.id)}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                            <span className="text-yellow-500 shrink-0">⚠</span>
+                            <select
+                              value=""
+                              onChange={(e) => handleRecordCategoryChange(idx, e.target.value)}
+                              className="text-xs bg-transparent text-[var(--text-secondary)] border-none focus:outline-none cursor-pointer truncate flex-1 min-w-0"
+                            >
+                              <option value="" disabled>{item.description}</option>
+                              {getLeafCategories().map((cat) => (
+                                <option key={cat.id} value={cat.id}>
+                                  {buildCategoryPath(cat.id)}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {recordOverlapWarning && (
+                    <div className="px-3 py-2 text-xs text-yellow-500">
+                      {recordOverlapWarning}
+                    </div>
+                  )}
+
+                  <div className="flex gap-2 px-3 py-3 border-t border-[var(--border)]">
+                    <button
+                      onClick={() => {
+                        setShowRecordPreview(false);
+                        setRecordPreview([]);
+                      }}
+                      className="flex-1 py-2 rounded-lg text-sm text-[var(--text-secondary)] border border-[var(--border)]"
+                    >
+                      取消
+                    </button>
+                    <button
+                      onClick={handleConfirmRecords}
+                      disabled={recordInserting || recordPreview.every(r => !r.categoryId)}
+                      className="flex-1 py-2 rounded-lg bg-gray-800 text-white text-sm font-medium disabled:opacity-40"
+                    >
+                      {recordInserting ? '补录中...' : '确认补录'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Timeline comparison */}

@@ -59,24 +59,34 @@ function ensureBubbleStyles() {
   style.id = BUBBLE_STYLE_ID;
   style.textContent = `
     @keyframes bubbleFloat0 {
-      0%, 100% { transform: translateY(0px) scale(1); }
-      50% { transform: translateY(-3px) scale(1.01); }
+      0%, 100% { transform: translate(0, 0) scale(1); }
+      25% { transform: translate(3px, -6px) scale(1.01); }
+      50% { transform: translate(-2px, -3px) scale(0.99); }
+      75% { transform: translate(4px, -7px) scale(1.02); }
     }
     @keyframes bubbleFloat1 {
-      0%, 100% { transform: translateY(0px) scale(1); }
-      50% { transform: translateY(-5px) scale(1.02); }
+      0%, 100% { transform: translate(0, 0) scale(1); }
+      25% { transform: translate(-4px, -8px) scale(1.02); }
+      50% { transform: translate(3px, -5px) scale(0.98); }
+      75% { transform: translate(-2px, -6px) scale(1.01); }
     }
     @keyframes bubbleFloat2 {
-      0%, 100% { transform: translateY(0px) scale(1); }
-      50% { transform: translateY(-4px) scale(1.015); }
+      0%, 100% { transform: translate(0, 0) scale(1); }
+      25% { transform: translate(2px, -7px) scale(1.015); }
+      50% { transform: translate(-3px, -4px) scale(0.99); }
+      75% { transform: translate(5px, -8px) scale(1.02); }
     }
     @keyframes bubbleFloat3 {
-      0%, 100% { transform: translateY(0px) scale(1.01); }
-      50% { transform: translateY(-3px) scale(0.99); }
+      0%, 100% { transform: translate(0, 0) scale(1.01); }
+      25% { transform: translate(-3px, -5px) scale(0.99); }
+      50% { transform: translate(4px, -7px) scale(1.02); }
+      75% { transform: translate(-2px, -6px) scale(0.98); }
     }
     @keyframes bubbleFloat4 {
-      0%, 100% { transform: translateY(-2px) scale(1); }
-      50% { transform: translateY(2px) scale(1.02); }
+      0%, 100% { transform: translate(0, 0) scale(1); }
+      25% { transform: translate(5px, -6px) scale(1.01); }
+      50% { transform: translate(-4px, -8px) scale(1.02); }
+      75% { transform: translate(3px, -5px) scale(0.99); }
     }
     @keyframes glowPulse {
       0%, 100% { box-shadow: 0 0 8px 2px rgba(239,68,68,0.4); }
@@ -122,16 +132,17 @@ function computeBubbleLayout(
 
   for (let rank = 0; rank < n; rank++) {
     const i = indices[rank];
-    const radiusFactor = 0.15 + (rank / n) * 0.55;
-    const maxRadius = Math.min(containerWidth, containerHeight) * 0.35;
-    const r = maxRadius * radiusFactor;
+    const radiusFactor = 0.15 + (rank / n) * 0.65;
+    const maxRadiusX = containerWidth * 0.42;
+    const maxRadiusY = containerHeight * 0.42;
+    const r = Math.min(maxRadiusX, maxRadiusY) * radiusFactor;
     const angle = angleStep * rank - Math.PI / 2;
-    // Add seeded pseudo-random offset based on index
-    const offsetX = ((i * 37 + 13) % 20) - 10;
-    const offsetY = ((i * 53 + 7) % 20) - 10;
+    // Add seeded pseudo-random offset based on index (±15px)
+    const offsetX = ((i * 37 + 13) % 30) - 15;
+    const offsetY = ((i * 53 + 7) % 30) - 15;
     positions[i] = {
-      x: cx + r * Math.cos(angle) + offsetX,
-      y: cy + r * Math.sin(angle) + offsetY,
+      x: cx + r * Math.cos(angle) * (maxRadiusX / Math.min(maxRadiusX, maxRadiusY)) + offsetX,
+      y: cy + r * Math.sin(angle) * (maxRadiusY / Math.min(maxRadiusX, maxRadiusY)) + offsetY,
       size: sizes[i],
     };
   }
@@ -1055,22 +1066,13 @@ export default function Timer() {
                     height: pos.size * 0.8,
                     left: pos.x - (pos.size * 0.8) / 2,
                     top: pos.y - (pos.size * 0.8) / 2,
-                    background: `radial-gradient(circle at 35% 35%, ${color1}, ${color2})`,
+                    background: `radial-gradient(ellipse 35% 30% at 35% 30%, rgba(255,255,255,0.30) 0%, transparent 100%), radial-gradient(ellipse 40% 35% at 65% 70%, rgba(255,255,255,0.08) 0%, transparent 100%), radial-gradient(circle at 50% 50%, ${color1} 0%, ${color2} 100%)`,
                     opacity: 0.15,
                     boxShadow: '0 4px 20px rgba(0,0,0,0.05)',
                   }}
                 >
-                  <div className="flex flex-col items-center gap-0.5">
+                  <div className="flex items-center justify-center">
                     <span style={{ fontSize: '18px' }}>{parent.icon}</span>
-                    <span
-                      className="font-medium"
-                      style={{
-                        fontSize: '11px',
-                        color: isDark ? '#E0E0E0' : '#4A4A4A',
-                      }}
-                    >
-                      {parent.name}
-                    </span>
                   </div>
                 </div>
               );
@@ -1087,7 +1089,8 @@ export default function Timer() {
                   style={{
                     width: 130,
                     height: 130,
-                    background: `radial-gradient(circle at 35% 35%, ${color1}, ${color2})`,
+                    background: `radial-gradient(ellipse 35% 30% at 35% 30%, rgba(255,255,255,0.30) 0%, transparent 100%), radial-gradient(ellipse 40% 35% at 65% 70%, rgba(255,255,255,0.08) 0%, transparent 100%), radial-gradient(circle at 50% 50%, ${color1} 0%, ${color2} 100%)`,
+                    opacity: 0.92,
                     boxShadow: isDark
                       ? '0 8px 40px rgba(0,0,0,0.4)'
                       : '0 8px 40px rgba(0,0,0,0.12)',
@@ -1236,7 +1239,8 @@ export default function Timer() {
                     height: pos.size,
                     left: pos.x - pos.size / 2,
                     top: pos.y - pos.size / 2,
-                    background: `radial-gradient(circle at 35% 35%, ${color1}, ${color2})`,
+                    background: `radial-gradient(ellipse 35% 30% at 35% 30%, rgba(255,255,255,0.30) 0%, transparent 100%), radial-gradient(ellipse 40% 35% at 65% 70%, rgba(255,255,255,0.08) 0%, transparent 100%), radial-gradient(circle at 50% 50%, ${color1} 0%, ${color2} 100%)`,
+                    opacity: 0.92,
                     boxShadow: isActiveBubble
                       ? undefined
                       : isSecondaryBubble
@@ -1257,17 +1261,8 @@ export default function Timer() {
                   }}
                   onClick={() => handleBubbleClick(parent.id)}
                 >
-                  <div className="flex flex-col items-center gap-0.5 pointer-events-none">
-                    <span style={{ fontSize: '24px' }}>{parent.icon}</span>
-                    <span
-                      className="font-medium"
-                      style={{
-                        fontSize: '14px',
-                        color: isDark ? '#E0E0E0' : '#4A4A4A',
-                      }}
-                    >
-                      {parent.name}
-                    </span>
+                  <div className="flex items-center justify-center pointer-events-none">
+                    <span style={{ fontSize: '34px' }}>{parent.icon}</span>
                   </div>
 
                   {/* Edit mode gear icon */}
