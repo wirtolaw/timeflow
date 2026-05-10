@@ -12,6 +12,11 @@ export default function Plan() {
   const [todayEntries, setTodayEntries] = useState<TimeEntry[]>([]);
   const [currentPlan, setCurrentPlan] = useState<DailyPlan | null>(null);
 
+  // New state for layout
+  const [isEditingPlan, setIsEditingPlan] = useState(false);
+  const [showReport, setShowReport] = useState(false);
+  const [showPasteSection, setShowPasteSection] = useState(false);
+
   const dateStr = format(selectedDate, 'yyyy-MM-dd');
   const displayDate = format(selectedDate, 'M月d日');
   const isToday = format(new Date(), 'yyyy-MM-dd') === dateStr;
@@ -74,6 +79,13 @@ export default function Plan() {
     loadPlan();
     loadEntries();
   }, [loadPlan, loadEntries]);
+
+  // Reset editing state when date changes
+  useEffect(() => {
+    setIsEditingPlan(false);
+    setShowPasteSection(false);
+    setShowReport(false);
+  }, [dateStr]);
 
   const getCategoryById = (id: string) => categories.find((c) => c.id === id);
 
@@ -154,48 +166,13 @@ export default function Plan() {
     });
 
     await supabase.from('tf_plan_blocks').insert(blockRows);
+    setIsEditingPlan(false);
     loadPlan();
   };
 
   const timeToMinutes = (t: string): number => {
     const parts = t.split(':').map(Number);
     return parts[0] * 60 + (parts[1] ?? 0);
-  };
-
-  const getTimeRange = (): { minMin: number; maxMin: number } => {
-    let minMin = 24 * 60;
-    let maxMin = 0;
-    for (const block of planBlocks) {
-      const s = timeToMinutes(block.start_time);
-      const e = timeToMinutes(block.end_time);
-      minMin = Math.min(minMin, s);
-      maxMin = Math.max(maxMin, e);
-    }
-    for (const entry of todayEntries) {
-      const s = new Date(entry.start_time);
-      const e = entry.end_time ? new Date(entry.end_time) : new Date();
-      const sMin = s.getHours() * 60 + s.getMinutes();
-      const eMin = e.getHours() * 60 + e.getMinutes();
-      minMin = Math.min(minMin, sMin);
-      maxMin = Math.max(maxMin, eMin);
-    }
-    if (minMin >= maxMin) {
-      minMin = 8 * 60;
-      maxMin = 22 * 60;
-    }
-    minMin = Math.floor(minMin / 60) * 60;
-    maxMin = Math.ceil(maxMin / 60) * 60;
-    return { minMin, maxMin };
-  };
-
-  const { minMin, maxMin } = getTimeRange();
-  const totalRange = maxMin - minMin || 1;
-  const TIMELINE_HEIGHT = 500;
-
-  const getBlockStyle = (startMin: number, endMin: number) => {
-    const top = ((startMin - minMin) / totalRange) * TIMELINE_HEIGHT;
-    const height = Math.max(((endMin - startMin) / totalRange) * TIMELINE_HEIGHT, 20);
-    return { top, height };
   };
 
   const actualBlocks = todayEntries.map((entry) => {
@@ -212,8 +189,38 @@ export default function Plan() {
       color: cat?.color ?? parent?.color ?? '#6b7280',
       categoryId: entry.category_id,
       minutes: Math.round(eMin - sMin),
+      entry,
     };
   });
+
+  // Match status for each plan block: check if actual entries overlap + category match
+  const getPlanBlockMatchStatus = (block: PlanBlock): 'matched' | 'deviated' | 'none' => {
+    if (actualBlocks.length === 0) return 'none';
+
+    const blockStart = timeToMinutes(block.start_time);
+    const blockEnd = timeToMinutes(block.end_time);
+    const windowStart = blockStart - 30;
+    const windowEnd = blockEnd + 30;
+
+    for (const ab of actualBlocks) {
+      if (!block.matched_category_id) continue;
+      if (ab.endMin <= windowStart || ab.startMin >= windowEnd) continue;
+
+      const matchedCat = getCategoryById(block.matched_category_id);
+      const abCat = getCategoryById(ab.categoryId);
+      if (!matchedCat || !abCat) continue;
+
+      const matchParentId = matchedCat.parent_id ?? matchedCat.id;
+      const abParentId = abCat.parent_id ?? abCat.id;
+
+      if (ab.categoryId === block.matched_category_id || abParentId === matchParentId) {
+        return 'matched';
+      }
+    }
+
+    // There are actual entries but none matched this plan block
+    return 'deviated';
+  };
 
   const computeMatchStats = () => {
     if (planBlocks.length === 0 || actualBlocks.length === 0) return null;
@@ -322,7 +329,6 @@ export default function Plan() {
   };
 
   // ====== Time Record Paste Feature ======
-  const [showRecordSection, setShowRecordSection] = useState(false);
   const [recordDate, setRecordDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [recordText, setRecordText] = useState('');
   const [recordPreview, setRecordPreview] = useState<Array<{
@@ -339,7 +345,6 @@ export default function Plan() {
 
   // Get all leaf categories (no children)
   const getLeafCategories = useCallback(() => {
-    // A leaf is a category that is not a parent of any other category
     return categories.filter(c => !categories.some(child => child.parent_id === c.id));
   }, [categories]);
 
@@ -365,7 +370,7 @@ export default function Plan() {
     const leaves = getLeafCategories();
     const desc = description.toLowerCase().trim();
 
-    // First pass: exact substring match (description contains category name or vice versa)
+    // First pass: exact substring match
     for (const leaf of leaves) {
       const leafName = leaf.name.toLowerCase();
       if (desc.includes(leafName) || leafName.includes(desc)) {
@@ -373,7 +378,7 @@ export default function Plan() {
       }
     }
 
-    // Second pass: check if any keyword from description matches
+    // Second pass: keyword match
     const keywords = desc.split(/[\s,，、]+/).filter(k => k.length >= 2);
     for (const leaf of leaves) {
       const leafName = leaf.name.toLowerCase();
@@ -384,7 +389,7 @@ export default function Plan() {
       }
     }
 
-    // Third pass: check parent category names
+    // Third pass: parent category names
     for (const leaf of leaves) {
       const parent = leaf.parent_id ? categories.find(c => c.id === leaf.parent_id) : null;
       if (parent) {
@@ -412,7 +417,6 @@ export default function Plan() {
       const trimmed = line.trim();
       if (!trimmed) continue;
 
-      // Match time patterns: HH:MM-HH:MM, H:MM-H:MM, with -, ~, ～ separators
       const match = trimmed.match(
         /(\d{1,2}:\d{2})\s*[-~～]\s*(\d{1,2}:\d{2})\s+(.+)/
       );
@@ -454,7 +458,6 @@ export default function Plan() {
     setRecordOverlapWarning('');
 
     try {
-      // Check for overlaps with existing entries
       const dayStart = `${recordDate}T00:00:00`;
       const dayEnd = `${recordDate}T23:59:59`;
       const { data: existingEntries } = await supabase
@@ -481,7 +484,6 @@ export default function Plan() {
         const startMs = new Date(startISO).getTime();
         const endMs = new Date(endISO).getTime();
 
-        // Check overlap
         if (existingEntries) {
           for (const existing of existingEntries) {
             const exStart = new Date(existing.start_time).getTime();
@@ -520,11 +522,10 @@ export default function Plan() {
 
       await supabase.from('tf_time_entries').insert(toInsert);
 
-      // Reset state and reload
       setRecordText('');
       setRecordPreview([]);
       setShowRecordPreview(false);
-      setShowRecordSection(false);
+      setShowPasteSection(false);
       loadEntries();
     } catch {
       setRecordOverlapWarning('补录失败，请重试');
@@ -550,21 +551,29 @@ export default function Plan() {
     return '\u{1F534}';
   };
 
-  const timeLabels: number[] = [];
-  for (let m = minMin; m <= maxMin; m += 60) {
-    timeLabels.push(m);
-  }
+  const hasPlan = planBlocks.length > 0;
+  const hasEntries = todayEntries.length > 0;
+  const hasReport = hasPlan && hasEntries && (matchStats || accuracyStats);
+
+  // Format time from HH:MM:SS to HH:MM
+  const fmtTime = (t: string) => t.slice(0, 5);
+
+  // Format entry time from ISO string
+  const fmtEntryTime = (iso: string) => {
+    const d = new Date(iso);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  };
 
   return (
     <div className="flex flex-col min-h-screen pb-16">
-      {/* Header */}
+      {/* Header: Date selector */}
       <div className="bg-gray-800 text-white px-4 py-4">
         <div className="flex items-center justify-between">
           <button
             onClick={() => setSelectedDate(subDays(selectedDate, 1))}
             className="px-3 py-1 text-lg"
           >
-            ‹
+            &#8249;
           </button>
           <div className="text-center">
             <div className="text-base font-medium">{displayDate}</div>
@@ -574,43 +583,164 @@ export default function Plan() {
             onClick={() => setSelectedDate(addDays(selectedDate, 1))}
             className="px-3 py-1 text-lg"
           >
-            ›
+            &#8250;
           </button>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-3">
-        {/* Plan input area */}
+      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-0">
+
+        {/* ==================== Section 1: Plan ==================== */}
         <div className="mb-4">
-          <textarea
-            value={rawText}
-            onChange={(e) => setRawText(e.target.value)}
-            placeholder={"粘贴日程文字，例如:\n9:00-10:30 学法语课程\n14:00-15:00 写小说\n15:30-17:00 投简历"}
-            className="w-full px-3 py-2 rounded-lg border border-[var(--border)] text-sm focus:outline-none focus:ring-1 focus:ring-gray-300 resize-none bg-[var(--bg-card)] text-[var(--text-primary)]"
-            rows={4}
-          />
-          <button
-            onClick={handleParse}
-            disabled={!rawText.trim()}
-            className="mt-2 w-full py-2 rounded-lg bg-gray-800 text-white text-sm font-medium disabled:opacity-40"
-          >
-            解析日程
-          </button>
+          {/* Section header */}
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-[var(--text-primary)]">
+              {'\uD83D\uDCCB'} 计划
+            </h2>
+            {hasPlan && !isEditingPlan && (
+              <button
+                onClick={() => setIsEditingPlan(true)}
+                className="text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+              >
+                [编辑]
+              </button>
+            )}
+          </div>
+
+          {/* Display mode: show plan blocks as list */}
+          {hasPlan && !isEditingPlan && (
+            <div className="space-y-1.5">
+              {planBlocks.map((block) => {
+                const cat = block.matched_category_id
+                  ? getCategoryById(block.matched_category_id)
+                  : null;
+                const parent = cat?.parent_id ? getCategoryById(cat.parent_id) : cat;
+                const color = parent?.color ?? cat?.color ?? '#9ca3af';
+                const status = getPlanBlockMatchStatus(block);
+                const statusIcon = status === 'matched' ? '\u2705' : status === 'deviated' ? '\u274C' : '\u2B1C';
+
+                return (
+                  <div
+                    key={block.id}
+                    className="flex items-center justify-between px-3 py-2 rounded-lg bg-[var(--bg-card)]"
+                    style={{ borderLeft: `3px solid ${color}` }}
+                  >
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <span className="text-xs text-[var(--text-secondary)] tabular-nums shrink-0">
+                        {fmtTime(block.start_time)} - {fmtTime(block.end_time)}
+                      </span>
+                      <span className="text-sm text-[var(--text-primary)] truncate">
+                        {block.task_name}
+                      </span>
+                    </div>
+                    <span className="text-sm shrink-0 ml-2">{statusIcon}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Edit mode / No plan: show textarea */}
+          {(!hasPlan || isEditingPlan) && (
+            <div>
+              <textarea
+                value={rawText}
+                onChange={(e) => setRawText(e.target.value)}
+                placeholder={"粘贴日程文字，例如:\n9:00-10:30 学法语课程\n14:00-15:00 写小说\n15:30-17:00 投简历"}
+                className="w-full px-3 py-2 rounded-lg border border-[var(--border)] text-sm focus:outline-none focus:ring-1 focus:ring-gray-300 resize-none bg-[var(--bg-card)] text-[var(--text-primary)]"
+                rows={4}
+              />
+              <div className="flex gap-2 mt-2">
+                {isEditingPlan && hasPlan && (
+                  <button
+                    onClick={() => setIsEditingPlan(false)}
+                    className="flex-1 py-2 rounded-lg text-sm text-[var(--text-secondary)] border border-[var(--border)]"
+                  >
+                    取消
+                  </button>
+                )}
+                <button
+                  onClick={handleParse}
+                  disabled={!rawText.trim()}
+                  className="flex-1 py-2 rounded-lg bg-gray-800 text-white text-sm font-medium disabled:opacity-40"
+                >
+                  保存计划
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* ====== Time Record Paste Section ====== */}
-        <div className="mb-4 border-t border-[var(--border)] pt-3">
-          <button
-            onClick={() => setShowRecordSection(!showRecordSection)}
-            className="flex items-center gap-2 text-sm font-medium text-[var(--text-primary)] w-full text-left"
-          >
-            <span>{showRecordSection ? '▼' : '▶'}</span>
-            <span>📋 补录时间记录</span>
-          </button>
+        {/* ==================== Separator ==================== */}
+        <div className="border-t border-[var(--border)] my-4" />
 
-          {showRecordSection && (
+        {/* ==================== Section 2: Actual ==================== */}
+        <div className="mb-4">
+          {/* Section header */}
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-[var(--text-primary)]">
+              {'\u23F1'} 实际
+            </h2>
+            {hasEntries && (
+              <button
+                onClick={() => setShowPasteSection(!showPasteSection)}
+                className="text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+              >
+                [补录]
+              </button>
+            )}
+          </div>
+
+          {/* Actual entries list */}
+          {hasEntries && (
+            <div className="space-y-1.5">
+              {actualBlocks.map((ab, i) => {
+                const startStr = fmtEntryTime(ab.entry.start_time);
+                const endStr = ab.entry.end_time ? fmtEntryTime(ab.entry.end_time) : '进行中';
+                // Detect if manually added (heuristic: entries created via paste have exact :00 seconds)
+                const startDate = new Date(ab.entry.start_time);
+                const isManual = startDate.getSeconds() === 0 && startDate.getMilliseconds() === 0;
+
+                return (
+                  <div
+                    key={ab.entry.id ?? i}
+                    className="flex items-center justify-between px-3 py-2 rounded-lg bg-[var(--bg-card)]"
+                    style={{ borderLeft: `3px solid ${ab.color}` }}
+                  >
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <span className="text-xs text-[var(--text-secondary)] tabular-nums shrink-0">
+                        {startStr} - {endStr}
+                      </span>
+                      <span className="text-sm text-[var(--text-primary)] truncate">
+                        {ab.name}
+                      </span>
+                    </div>
+                    <span
+                      className="text-xs shrink-0 ml-2 px-1.5 py-0.5 rounded"
+                      style={{
+                        backgroundColor: isManual ? 'var(--bg-secondary)' : `${ab.color}15`,
+                        color: isManual ? 'var(--text-secondary)' : ab.color,
+                      }}
+                    >
+                      {isManual ? '补录' : '自动'}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* No entries state */}
+          {!hasEntries && (
+            <div className="text-center text-[var(--text-secondary)] text-sm py-4">
+              今日暂无时间记录
+            </div>
+          )}
+
+          {/* Paste section: shown directly when no entries, or collapsible when entries exist */}
+          {(!hasEntries || showPasteSection) && (
             <div className="mt-3 space-y-3">
-              {/* Date selector */}
+              {/* Date selector for records */}
               <div className="flex items-center gap-2">
                 <label className="text-xs text-[var(--text-secondary)]">日期:</label>
                 <input
@@ -621,7 +751,6 @@ export default function Plan() {
                 />
               </div>
 
-              {/* Textarea for pasting records */}
               <textarea
                 value={recordText}
                 onChange={(e) => setRecordText(e.target.value)}
@@ -654,7 +783,7 @@ export default function Plan() {
                         </span>
                         {item.categoryId ? (
                           <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                            <span className="text-green-500 shrink-0">✓</span>
+                            <span className="text-green-500 shrink-0">{'\u2713'}</span>
                             <select
                               value={item.categoryId}
                               onChange={(e) => handleRecordCategoryChange(idx, e.target.value)}
@@ -669,7 +798,7 @@ export default function Plan() {
                           </div>
                         ) : (
                           <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                            <span className="text-yellow-500 shrink-0">⚠</span>
+                            <span className="text-yellow-500 shrink-0">{'\u26A0'}</span>
                             <select
                               value=""
                               onChange={(e) => handleRecordCategoryChange(idx, e.target.value)}
@@ -718,219 +847,127 @@ export default function Plan() {
           )}
         </div>
 
-        {/* Timeline comparison */}
-        {(planBlocks.length > 0 || actualBlocks.length > 0) && (
+        {/* ==================== Section 3: Report ==================== */}
+        {hasReport && (
           <div className="mb-4">
-            <div className="flex text-xs text-[var(--text-secondary)] mb-2">
-              <div className="w-10" />
-              <div className="flex-1 text-center font-medium">计划</div>
-              <div className="flex-1 text-center font-medium">实际</div>
-            </div>
+            <div className="border-t border-[var(--border)] my-4" />
 
-            <div className="flex relative" style={{ height: TIMELINE_HEIGHT }}>
-              {/* Time axis */}
-              <div className="w-10 relative shrink-0">
-                {timeLabels.map((m) => {
-                  const top = ((m - minMin) / totalRange) * TIMELINE_HEIGHT;
-                  const h = Math.floor(m / 60);
-                  return (
-                    <div
-                      key={m}
-                      className="absolute text-xs text-[var(--text-secondary)] -translate-y-1/2"
-                      style={{ top }}
-                    >
-                      {h}:00
-                    </div>
-                  );
-                })}
-              </div>
+            {/* Collapsed header */}
+            <button
+              onClick={() => setShowReport(!showReport)}
+              className="w-full flex items-center gap-2 text-left"
+            >
+              <span className="text-xs text-[var(--text-secondary)]">
+                {showReport ? '\u25BC' : '\u25B6'}
+              </span>
+              <span className="text-sm font-semibold text-[var(--text-primary)]">
+                {'\uD83D\uDCCA'} 今日报告
+              </span>
+              {matchStats && (
+                <span className="text-xs text-[var(--text-secondary)] ml-auto">
+                  执行匹配度 {matchStats.matchRate}%
+                  {accuracyStats ? `  |  平均偏差 ${accuracyStats.avgAbsDev > 0 ? '+' : ''}${accuracyStats.avgAbsDev}%` : ''}
+                </span>
+              )}
+            </button>
 
-              {/* Plan column */}
-              <div className="flex-1 relative mx-1">
-                {timeLabels.map((m) => {
-                  const top = ((m - minMin) / totalRange) * TIMELINE_HEIGHT;
-                  return (
-                    <div
-                      key={m}
-                      className="absolute w-full border-t border-[var(--border)]"
-                      style={{ top }}
-                    />
-                  );
-                })}
-                {planBlocks.map((block) => {
-                  const sMin = timeToMinutes(block.start_time);
-                  const eMin = timeToMinutes(block.end_time);
-                  const { top, height } = getBlockStyle(sMin, eMin);
-                  const cat = block.matched_category_id
-                    ? getCategoryById(block.matched_category_id)
-                    : null;
-                  const parent = cat?.parent_id ? getCategoryById(cat.parent_id) : cat;
-                  const color = parent?.color ?? cat?.color ?? '#9ca3af';
-                  return (
-                    <div
-                      key={block.id}
-                      className="absolute left-0 right-0 rounded-md px-1.5 py-1 overflow-hidden"
-                      style={{
-                        top,
-                        height,
-                        backgroundColor: color + '20',
-                        borderLeft: `3px solid ${color}`,
-                      }}
-                    >
-                      <div className="text-xs font-medium truncate" style={{ color }}>
-                        {block.task_name}
+            {/* Expanded content */}
+            {showReport && (
+              <div className="space-y-4 mt-3">
+                {/* Card 1: Match rate */}
+                {matchStats && (
+                  <div className="bg-[var(--bg-card)] rounded-xl p-4 border border-[var(--border)]">
+                    <h3 className="text-sm font-medium text-[var(--text-primary)] mb-3">执行匹配度</h3>
+                    <div className="text-center mb-3">
+                      <div className="text-3xl font-bold text-[var(--text-primary)]">{matchStats.matchRate}%</div>
+                      <div className="text-xs text-[var(--text-secondary)] mt-1">
+                        匹配 {matchStats.matchedMinutes} 分钟 / 计划 {matchStats.totalPlannedMinutes} 分钟
                       </div>
-                      {height > 30 && (
-                        <div className="text-xs text-[var(--text-secondary)]">
-                          {block.estimated_minutes}分钟
-                        </div>
-                      )}
                     </div>
-                  );
-                })}
-              </div>
+                    <div className="w-full h-2.5 bg-[var(--bg-secondary)] rounded-full overflow-hidden mb-4">
+                      <div
+                        className="h-full rounded-full transition-all"
+                        style={{
+                          width: `${matchStats.matchRate}%`,
+                          backgroundColor: matchStats.matchRate >= 70 ? '#22c55e' : matchStats.matchRate >= 40 ? '#eab308' : '#ef4444',
+                        }}
+                      />
+                    </div>
 
-              {/* Actual column */}
-              <div className="flex-1 relative mx-1">
-                {timeLabels.map((m) => {
-                  const top = ((m - minMin) / totalRange) * TIMELINE_HEIGHT;
-                  return (
-                    <div
-                      key={m}
-                      className="absolute w-full border-t border-[var(--border)]"
-                      style={{ top }}
-                    />
-                  );
-                })}
-                {actualBlocks.map((ab, i) => {
-                  const { top, height } = getBlockStyle(ab.startMin, ab.endMin);
-                  return (
-                    <div
-                      key={i}
-                      className="absolute left-0 right-0 rounded-md px-1.5 py-1 overflow-hidden"
-                      style={{
-                        top,
-                        height,
-                        backgroundColor: ab.color + '30',
-                        borderLeft: `3px solid ${ab.color}`,
-                      }}
-                    >
-                      <div className="text-xs font-medium truncate" style={{ color: ab.color }}>
-                        {ab.name}
+                    {matchStats.matchedSlots.length > 0 && (
+                      <div className="mb-3">
+                        <div className="text-xs font-medium text-green-600 mb-1.5">已匹配时段</div>
+                        <div className="space-y-1">
+                          {matchStats.matchedSlots.map((slot, i) => (
+                            <div key={i} className="flex items-center gap-2 text-xs">
+                              <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: slot.color }} />
+                              <span className="text-[var(--text-secondary)] tabular-nums w-24 shrink-0">{slot.time}</span>
+                              <span className="text-[var(--text-primary)] truncate">{slot.task}</span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                      {height > 30 && (
-                        <div className="text-xs text-[var(--text-secondary)]">{ab.minutes}分钟</div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        )}
+                    )}
 
-        {/* Bottom Stats Cards */}
-        {(matchStats || accuracyStats) && (
-          <div className="space-y-4 mb-4">
-            {/* Card 1: 执行匹配度 */}
-            {matchStats && (
-              <div className="bg-[var(--bg-card)] rounded-xl p-4 border border-[var(--border)]">
-                <h3 className="text-sm font-medium text-[var(--text-primary)] mb-3">执行匹配度</h3>
-                <div className="text-center mb-3">
-                  <div className="text-3xl font-bold text-[var(--text-primary)]">{matchStats.matchRate}%</div>
-                  <div className="text-xs text-[var(--text-secondary)] mt-1">
-                    匹配 {matchStats.matchedMinutes} 分钟 / 计划 {matchStats.totalPlannedMinutes} 分钟
-                  </div>
-                </div>
-                <div className="w-full h-2.5 bg-[var(--bg-secondary)] rounded-full overflow-hidden mb-4">
-                  <div
-                    className="h-full rounded-full transition-all"
-                    style={{
-                      width: `${matchStats.matchRate}%`,
-                      backgroundColor: matchStats.matchRate >= 70 ? '#22c55e' : matchStats.matchRate >= 40 ? '#eab308' : '#ef4444',
-                    }}
-                  />
-                </div>
-
-                {matchStats.matchedSlots.length > 0 && (
-                  <div className="mb-3">
-                    <div className="text-xs font-medium text-green-600 mb-1.5">已匹配时段</div>
-                    <div className="space-y-1">
-                      {matchStats.matchedSlots.map((slot, i) => (
-                        <div key={i} className="flex items-center gap-2 text-xs">
-                          <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: slot.color }} />
-                          <span className="text-[var(--text-secondary)] tabular-nums w-24 shrink-0">{slot.time}</span>
-                          <span className="text-[var(--text-primary)] truncate">{slot.task}</span>
+                    {matchStats.deviatedSlots.length > 0 && (
+                      <div>
+                        <div className="text-xs font-medium text-red-500 mb-1.5">未匹配时段</div>
+                        <div className="space-y-1">
+                          {matchStats.deviatedSlots.map((slot, i) => (
+                            <div key={i} className="flex items-center gap-2 text-xs">
+                              <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: slot.color }} />
+                              <span className="text-[var(--text-secondary)] tabular-nums w-24 shrink-0">{slot.time}</span>
+                              <span className="text-[var(--text-primary)] truncate">{slot.task}</span>
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
-                {matchStats.deviatedSlots.length > 0 && (
-                  <div>
-                    <div className="text-xs font-medium text-red-500 mb-1.5">未匹配时段</div>
-                    <div className="space-y-1">
-                      {matchStats.deviatedSlots.map((slot, i) => (
-                        <div key={i} className="flex items-center gap-2 text-xs">
-                          <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: slot.color }} />
-                          <span className="text-[var(--text-secondary)] tabular-nums w-24 shrink-0">{slot.time}</span>
-                          <span className="text-[var(--text-primary)] truncate">{slot.task}</span>
-                        </div>
-                      ))}
+                {/* Card 2: Accuracy */}
+                {accuracyStats && accuracyStats.rows.length > 0 && (
+                  <div className="bg-[var(--bg-card)] rounded-xl p-4 border border-[var(--border)]">
+                    <h3 className="text-sm font-medium text-[var(--text-primary)] mb-3">时间估计准确度</h3>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b border-[var(--border)]">
+                            <th className="text-left py-1.5 text-[var(--text-secondary)] font-medium">任务</th>
+                            <th className="text-right py-1.5 text-[var(--text-secondary)] font-medium w-16">计划</th>
+                            <th className="text-right py-1.5 text-[var(--text-secondary)] font-medium w-16">实际</th>
+                            <th className="text-right py-1.5 text-[var(--text-secondary)] font-medium w-16">偏差</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {accuracyStats.rows.map((row, i) => (
+                            <tr key={i} className="border-b border-[var(--border)]">
+                              <td className="py-1.5 truncate max-w-[120px]" style={{ color: row.color }}>
+                                {row.task}
+                              </td>
+                              <td className="text-right py-1.5 text-[var(--text-secondary)] tabular-nums">{row.planned}m</td>
+                              <td className="text-right py-1.5 text-[var(--text-primary)] tabular-nums">{row.actual}m</td>
+                              <td className={`text-right py-1.5 tabular-nums ${getDeviationColor(row.deviationPct)}`}>
+                                {getDeviationDot(row.deviationPct)} {row.deviationPct > 0 ? '+' : ''}{row.deviationPct}%
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="mt-3 pt-3 border-t border-[var(--border)] flex justify-between items-center">
+                      <span className="text-xs text-[var(--text-secondary)]">平均绝对偏差</span>
+                      <span className={`text-sm font-semibold ${getDeviationColor(accuracyStats.avgAbsDev)}`}>
+                        {accuracyStats.avgAbsDev}%
+                      </span>
                     </div>
                   </div>
                 )}
               </div>
             )}
-
-            {/* Card 2: 时间估计准确度 */}
-            {accuracyStats && accuracyStats.rows.length > 0 && (
-              <div className="bg-[var(--bg-card)] rounded-xl p-4 border border-[var(--border)]">
-                <h3 className="text-sm font-medium text-[var(--text-primary)] mb-3">时间估计准确度</h3>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="border-b border-[var(--border)]">
-                        <th className="text-left py-1.5 text-[var(--text-secondary)] font-medium">任务</th>
-                        <th className="text-right py-1.5 text-[var(--text-secondary)] font-medium w-16">计划</th>
-                        <th className="text-right py-1.5 text-[var(--text-secondary)] font-medium w-16">实际</th>
-                        <th className="text-right py-1.5 text-[var(--text-secondary)] font-medium w-16">偏差</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {accuracyStats.rows.map((row, i) => (
-                        <tr key={i} className="border-b border-[var(--border)]">
-                          <td className="py-1.5 truncate max-w-[120px]" style={{ color: row.color }}>
-                            {row.task}
-                          </td>
-                          <td className="text-right py-1.5 text-[var(--text-secondary)] tabular-nums">{row.planned}m</td>
-                          <td className="text-right py-1.5 text-[var(--text-primary)] tabular-nums">{row.actual}m</td>
-                          <td className={`text-right py-1.5 tabular-nums ${getDeviationColor(row.deviationPct)}`}>
-                            {getDeviationDot(row.deviationPct)} {row.deviationPct > 0 ? '+' : ''}{row.deviationPct}%
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className="mt-3 pt-3 border-t border-[var(--border)] flex justify-between items-center">
-                  <span className="text-xs text-[var(--text-secondary)]">平均绝对偏差</span>
-                  <span className={`text-sm font-semibold ${getDeviationColor(accuracyStats.avgAbsDev)}`}>
-                    {accuracyStats.avgAbsDev}%
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Empty state */}
-        {planBlocks.length === 0 && actualBlocks.length === 0 && (
-          <div className="text-center text-[var(--text-secondary)] text-sm py-8">
-            粘贴日程文字并点击"解析日程"开始
           </div>
         )}
       </div>
