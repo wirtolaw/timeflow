@@ -1,0 +1,38 @@
+<svg viewBox="0 0 190 190" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0%" stop-color="#eeedf4"/>
+      <stop offset="100%" stop-color="#e2e0ee"/>
+    </linearGradient>
+    <linearGradient id="trail" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#e88080"/>
+      <stop offset="25%" stop-color="#e8a860"/>
+      <stop offset="50%" stop-color="#60c0a0"/>
+      <stop offset="75%" stop-color="#6898d8"/>
+      <stop offset="100%" stop-color="#a878c8"/>
+    </linearGradient>
+    <filter id="wv"><feGaussianBlur stdDeviation="2"/></filter>
+    <filter id="trailGlow">
+      <feGaussianBlur stdDeviation="2" result="g"/>
+      <feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="190" height="190" rx="42" fill="url(#bg)"/>
+  <g filter="url(#wv)">
+    <path d="M0 162 C40 154, 80 160, 120 155 C155 150, 175 157, 190 150 L190 190 L0 190Z" fill="#d4d2e2" opacity="0.3"/>
+    <path d="M0 174 C50 166, 90 172, 135 167 C160 162, 178 167, 190 162 L190 190 L0 190Z" fill="#cdcbd8" opacity="0.26"/>
+  </g>
+  <circle cx="95" cy="88" r="50" fill="none" stroke="#ccc8d8" stroke-width="1" opacity="0.4"/>
+  <g filter="url(#trailGlow)">
+    <path d="M95 38 A50 50 0 1 1 59.6 53.4" fill="none" stroke="url(#trail)" stroke-width="5" stroke-linecap="round" opacity="0.6"/>
+  </g>
+  <path d="M95 44 A44 44 0 1 1 63.9 57.9" fill="none" stroke="url(#trail)" stroke-width="8" stroke-linecap="round" opacity="0.1"/>
+  <circle cx="95" cy="42" r="2" fill="#c8c4d4" opacity="0.45"/>
+  <circle cx="141" cy="88" r="2" fill="#c8c4d4" opacity="0.45"/>
+  <circle cx="95" cy="134" r="2" fill="#c8c4d4" opacity="0.45"/>
+  <circle cx="49" cy="88" r="2" fill="#c8c4d4" opacity="0.45"/>
+  <line x1="95" y1="88" x2="95" y2="50" stroke="#8880a0" stroke-width="1.8" stroke-linecap="round" opacity="0.5"/>
+  <line x1="95" y1="88" x2="118" y2="72" stroke="#8880a0" stroke-width="2.2" stroke-linecap="round" opacity="0.45"/>
+  <circle cx="95" cy="88" r="3.5" fill="#b0a8c4" opacity="0.5"/>
+  <circle cx="95" cy="88" r="1.8" fill="#d0c8e0" opacity="0.7"/>
+</svg>
